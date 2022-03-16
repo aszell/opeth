@@ -3,7 +3,16 @@ import numpy as np
 import uuid
 import time
 import json
-from openephys import OpenEphysEvent, OpenEphysSpikeEvent
+import sys
+
+# Make this folder's relative OPETH available
+import inspect, os, pathlib
+currf = inspect.getabsfile(inspect.currentframe())
+parentdir = pathlib.Path(currf).parent.parent.absolute()
+print(f"Adding {parentdir} to path")
+sys.path.append(str(parentdir))  
+
+from opeth.openephys import OpenEphysEvent, OpenEphysSpikeEvent
 
 context = zmq.Context()
 

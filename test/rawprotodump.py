@@ -7,9 +7,16 @@ import time
 import json
 import pickle
 
-from openephys import OpenEphysEvent, OpenEphysSpikeEvent
+# Make this folder's relative OPETH available
+import inspect, os, pathlib
+currf = inspect.getabsfile(inspect.currentframe())
+parentdir = pathlib.Path(currf).parent.parent.absolute()
+print(f"Adding {parentdir} to path")
+sys.path.append(str(parentdir))  
+
+from opeth.openephys import OpenEphysEvent, OpenEphysSpikeEvent
 from pprint import pprint as pprinter
-from colldata import Collector
+from opeth.colldata import Collector
 
 sampcount = 0
 last_maxpos = 0
