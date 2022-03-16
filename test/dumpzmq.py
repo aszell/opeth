@@ -30,7 +30,7 @@ def send_heartbeat():
 
 def fdump(fhnd, ts, data=None):
     if data is not None:
-        fhnd.write("%d, %.5f" % (ts, data))
+        fhnd.write("%d, %s" % (ts, str(data)))
     else:
         fhnd.write("%d" % ts)
     fhnd.flush()
@@ -54,7 +54,7 @@ def dump_event(header, event):
     if event.type == 'TIMESTAMP':
         timestamp = event.timestamp
     elif event.type == 'TTL': # and event.event_id == 1:
-        fdump(fttl, event.sample_num + timestamp)
+        fdump(fttl, event.sample_num + timestamp, event)
     print("Event:", header)
     print(event)
 
