@@ -4,6 +4,7 @@ import uuid
 import time
 import json
 import sys
+import datetime
 
 # Make this folder's relative OPETH available
 import inspect, os, pathlib
@@ -29,10 +30,11 @@ def send_heartbeat():
 '''
 
 def fdump(fhnd, ts, data=None):
+    now_str = str(datetime.datetime.now())
     if data is not None:
-        fhnd.write("%d, %s" % (ts, str(data)))
+        fhnd.write(now_str + ": %d, %s\n" % (ts, str(data)))
     else:
-        fhnd.write("%d" % ts)
+        fhnd.write(now_str + ": %d\n" % ts)
     fhnd.flush()
 
 def connect():
