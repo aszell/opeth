@@ -16,7 +16,7 @@ if sys.version_info.major >= 3:
     from time import perf_counter as clock
 else:
     from time import clock
-    
+
 import time
 import logging
 import numpy as np
@@ -38,12 +38,16 @@ SPIKE_HOLDOFF = 0.00075         #: Dead time / censoring period (seconds)
 
 DBG_TEXT_DUMP = False
 
+# special extension to collect event types encoded in digital bits
+HAS_EVENTCODES = True
+EVTCODE_STOBECHANNEL = 7
+
 if DBG_TEXT_DUMP:
     flog = open('textlog.txt', 'wt')
 
 class Collector(object):
     '''Data storage class for raw analog data, timestamps and event timestamps.
-    
+
     Attributes:
         databuffer (2D CircularBuffer): The 2D data storage, each row representing a channel, each column a sample.
         tsbuffer (1D CircularBuffer): Timestamp buffer storing 1 time stamp value for each data column.
@@ -55,15 +59,15 @@ class Collector(object):
         drop_aux (bool): Adjusted through :meth:`set_drop_aux`, affects whether auxiliary data (the
             3 gyroscope channels) is to be filtered or not.
     '''
-    
+
     def __init__(self):
-        
+
         self.timestamp = 0
         self.channels = 0
-        
+
         self.databuffer = None
         self.tsbuffer = None
-        
+
         self.spikes = deque()
         self.ttls = deque()
         self.prev_trigger_ts = defaultdict(int)
@@ -73,27 +77,31 @@ class Collector(object):
 
         self.drop_aux = False
 
+        if HAS_EVENTCODES:
+            self.eventmask = 0
+            self.last_event_processed = None
+
     def update_samprate(self, samprate):
         '''Called when first data packet arrives, and any time when sampling rate changes'''
         self.set_sampling_rate(samprate)
-        
+
     def update_channels(self, channels):
         ''' Called when number of channels in data packets differ from previous '''
-        
+
         # todo: instead of abort reinitialize GUI properly when number of channels change
         if channels != self.channels:
             if self.channels ==  0:
                 self.channels = channels
             else:
-                logger.error("Channel count changed from %d to %d, please restart OPETH" % 
+                logger.error("Channel count changed from %d to %d, please restart OPETH" %
                     (self.channels, channels))
-                
+
                 exit()
-        
+
     def update_ts(self, timestamp):
         '''Required for old OE version that sent timestamps separately as events,
         kept it for backward compatibility.
-        
+
         Args:
             timestamp (int): stored in :attr:`timestamp` for later timestamp interpolation calculations
                 when data arrives.
@@ -105,21 +113,21 @@ class Collector(object):
 
     def add_data(self, data):
         '''Append a new chunk of analog channel measurements to the end of the storage array.
-        
-        Auxiliary channel data (gyroscopes) are automatically removed if 35 or 70 channels 
+
+        Auxiliary channel data (gyroscopes) are automatically removed if 35 or 70 channels
         were received (ch 33-35 or ch 65-70) and :attr:`drop_aux` is True.
-        
+
         Data sampling timestamps are calculated for each sample position based on the last received
         timestamp (stored in :attr:`timestamp` and the sample rate defaults to :attr:`SAMPLES_PER_SEC`.
-        
+
         Args:
             data: input data received from OE. Multiple channels, multiple samples.
                 (E.g. 35 rows/channels of 640 floating point samples.) Unit value is supposed to be in uV.
         '''
-        
+
         # we accept only 2D arrays!
         assert(len(data.shape) == 2)
-        
+
         # we get rid of AUX data (gyroscope) if 35 or 70 channels are present
         if self.drop_aux:
             if data.shape[0] == 35:
@@ -175,10 +183,10 @@ class Collector(object):
 
         assert(self.databuffer.shape[1] == self.tsbuffer.shape[0])
 
-    
+
     def keep_last(self, seconds=None, samples=None, **kwargs):
         '''Convenience wrapper function for :attr:`drop_before`.
-        
+
         Args:
             seconds (int): length of samples to be kept in buffer (in number of seconds). If given, it takes precedence over `samples`.
             samples (int): number of samples to be kept in buffer.
@@ -199,13 +207,13 @@ class Collector(object):
         return len(self.databuffer) > 0
 
     def get_data(self):
-        '''Accessor function for the :attr:`databuffer`. 
-        
+        '''Accessor function for the :attr:`databuffer`.
+
         Obsolete. Former version could return the proper structure depending on which
         data storage backend was used. Now one may use :attr:`databuffer` directly as no other structure is configurable.
         '''
         return self.databuffer
-        
+
     def get_ts(self):
         '''
         Returns:
@@ -228,8 +236,8 @@ class Collector(object):
 
     def add_ttl(self, ttl):
         '''Store a new TTL event.
-        
-        All TTLs are stored regardless of the selected TTL channel, 
+
+        All TTLs are stored regardless of the selected TTL channel,
         the TTL processing happens in :meth:`process_ttl`.
         This code assumes the timestamp and the sample count are the same.
         '''
@@ -240,25 +248,44 @@ class Collector(object):
         if DBG_TEXT_DUMP:
             flog.write("TTL: %s\n" % str(ttl))
 
+    # special extension to handle binary coded 7 bit events
+    def process_eventcodes(self, event):
+        bitid = event.event_channel
+        bitval = event.event_id
+
+        eventmask_before = self.eventmask
+
+        # update specific bit
+        if bitid == EVTCODE_STOBECHANNEL:
+            if bitval == 1:
+                print(f"== strobe: {self.eventmask} ==\n")
+        else:
+            if bitval:
+                self.eventmask |= 1 << bitid
+            else:
+                self.eventmask &= ~(1 << bitid)
+
+            print(f"mask: {eventmask_before:3} + bit {bitid} = {bitval} -> {self.eventmask:3}  [{self.eventmask:07b}]")
+
     def process_ttl(self, start_offset=EVENT_ROI[0], end_offset=EVENT_ROI[1],
                     ttl_ch=None, trigger_holdoff = 0.001, **kwargs):
         '''Process a TTL (event), return data and timestamp around event on success
         or (None, None) otherwise - using first TTL from ttl_ch.
-        
+
         Drops all TTLs silently from channels other than ttl_ch.
-        Works on data accumulated by :meth:`add_data` calls (:attr:`dataarray` numpy array) 
+        Works on data accumulated by :meth:`add_data` calls (:attr:`dataarray` numpy array)
         and TTLs from :meth:`add_ttl` calls (self.ttls list). Too frequent pulses are filtered
         by `trigger_holdoff`
 
         Args:
-            start_offset (float): TTL-relative start offset in seconds, typically a small negative value to return data 
+            start_offset (float): TTL-relative start offset in seconds, typically a small negative value to return data
                 collected right before the TTL signal
             end_offset (float): TTL-relative end offset in seconds specifying end of data ROI
             ttl_ch (int): channel whose TTL events are to be processed as trigger
             trigger_holdoff (float): holdoff time in seconds until no new triggers are processed
                 (to protect the system against trigger bursts in case of broken cabling etc.)
         Returns:
-            2D numpy array of data (one row per channel) around the TTL ``[-start_offset .. +end_offset]``, 
+            2D numpy array of data (one row per channel) around the TTL ``[-start_offset .. +end_offset]``,
             1D numpy array of timestamps (same number of columns as data).
             Timestamps are actually sample number (sort of).
         '''
@@ -273,12 +300,20 @@ class Collector(object):
 
             ttl = self.ttls[0]
 
+            # this trigger seems to be a strobe signal, let's process it ->
+            if HAS_EVENTCODES:
+                # as ttl is not necessarily immediately processed by the rest,
+                # we must remember it was processed already
+                if self.last_event_processed != ttl:
+                    self.process_eventcodes(ttl)
+                    self.last_event_processed = ttl
+
             if ttl_ch is not None and ttl.event_channel != ttl_ch:
                 self.ttls.popleft()
                 continue
             elif ttl.timestamp > self.tsbuffer[-1] + self.samples_per_sec * 2:
                 # We have a TTL for the proper channel, let's check whether a timestamp jump has occured
-                # If ttl timestamp is far in the future (compared to data) we drop it, as it is probably 
+                # If ttl timestamp is far in the future (compared to data) we drop it, as it is probably
                 #  a remainder of a previous OE play session
                 logger.info("Dropping TTL timestamp %d - last data ts: %d" % (ttl.timestamp, self.tsbuffer[-1]))
                 self.ttls.popleft()
@@ -324,18 +359,18 @@ class Collector(object):
                 return data, ts
             else:
                 return None, None
-                
+
     def set_drop_aux(self, should_drop):
         '''Update AUX channel settings (whether we'd like to search for spikes on them or not).'''
         self.drop_aux = should_drop
-        
+
     def set_sampling_rate(self, sampling_rate):
         '''Update sampling rate - will also be queried by GUI'''
         assert(sampling_rate > 0)
         self.samples_per_sec = sampling_rate
         self.timestamp_per_sec = sampling_rate # current open ephys report timestamps as sample index
         self.max_data_amount = 2 * self.timestamp_per_sec   #: Buffering limit (sample count)
-        
+
     def get_sampling_rate(self):
         return self.samples_per_sec
 
@@ -346,19 +381,19 @@ class DataProc(object):
     def __init__(self, collector=None, drop_aux = False):
         '''
         Args:
-            collector (Collector): data on which the operations are performed. Only a reference, 
+            collector (Collector): data on which the operations are performed. Only a reference,
                 part of data to operate on is passed over to each function.
             drop_aux (bool): sets whether in a 35 or 70 analog channel case is a 32+3 (or 64+6) setup
-                with extra 3 (or 6) channels unimportant and to be dropped or important and are to be 
+                with extra 3 (or 6) channels unimportant and to be dropped or important and are to be
                 parsed for spikes.
         '''
-            
+
         self.coll = collector
         self.coll.set_drop_aux(drop_aux)
-        
+
         # initial setup - will be overridden after parameter updates
         self.set_sampling_rate(SAMPLES_PER_SEC)
-        
+
         # AutoTTL is used only in simulation: in case of missing trigger events
         # generate them based on a selected channel's detected spikes.
         #self.autottl_holdoff_value = int(0.04 * SAMPLES_PER_SEC)
@@ -367,16 +402,16 @@ class DataProc(object):
 
     def compress(self, data, rate, timestamps=None):
         '''Compress a 2D matrix column-wise by keeping the min and max values of the compressed chunks.
-        
+
         Used by real time raw display to reduce number of points to be plotted.
-        The displayed set tries to plot a sawtooth-style signal touching both 
+        The displayed set tries to plot a sawtooth-style signal touching both
         min and max values of the original signal of the given range.
-        
+
         Args:
             data (2D CircularBuffer): array to be compressed.
             rate (int): required compression rate.
             timestamps (1D CircularBuffer): timestamp axis is compressed the same way as vertical
-        ''' 
+        '''
         # drop first non-full chunk if necessary
         if data.shape[1] % rate != 0:
             data = data[:, -int(data.shape[1]/rate)*rate:]
@@ -389,7 +424,7 @@ class DataProc(object):
 
         compressed = np.ndarray((rows,cols * 2), dtype=str(data.dtype))
 
-        # compress also the timestamp - calculate the "mid point" of the timestamp range 
+        # compress also the timestamp - calculate the "mid point" of the timestamp range
         #  and set that as position for both min and max values
         if timestamps is not None:
             compts = np.ndarray((1, cols*2), dtype=str(timestamps.dtype))
@@ -403,7 +438,7 @@ class DataProc(object):
             dproc = drow.reshape(cols, rate)
 
             mins, maxes = dproc.min(axis=1).reshape(-1,1), dproc.max(axis=1).reshape(-1,1)
-            
+
             compressed[i, :] = np.concatenate((mins, maxes), axis=1).ravel() # a row of min0, max0, min1, max1... for each "rate" sized data chunk
 
         if timestamps is None:
@@ -417,16 +452,16 @@ class DataProc(object):
         Spike detection: from first continouos block of data exceeding threshold
         select maximal [minimal in case of negative threshold] value as spike position
         and don't search for spikes in the :attr:`SPIKE_HOLDOFF` time after crossing the threshold level.
-        
+
         Threshold method is selected by :attr:`SPIKE_THRESHOLD_BELOW` setting (True by default).
-        
+
         Args:
             threshold (scalar or vector): must have the same number of channels as data.
             data (ndarray e.g. CircularBuffer): samples on which spike filtering will be performed.
             timestamps: time stamps accompanying the data samples
             rising_edge (bool): false if threshold level should be considered a negative threshold
                 and falling edge is to be detected
-            
+
         Returns:
             a list of spike positions (sample index) and another list of the same position as timestamp.
         """
@@ -436,8 +471,8 @@ class DataProc(object):
         else:
             thresholded = data <= threshold
 
-        # simplest spike detection: first index of signal over threshold 
-        #where = np.argmax(thresholded, axis = 1) 
+        # simplest spike detection: first index of signal over threshold
+        #where = np.argmax(thresholded, axis = 1)
         #if type(threshold) != float:
         #    print "T0", threshold, data.min(), data.max()
         #    print "Where:", where
@@ -494,36 +529,36 @@ class DataProc(object):
             spikestamps.append(ch_time)
 
         return spikepositions, spikestamps
-        
+
     def set_sampling_rate(self, sampling_rate):
         logger.info("Data processor assumes sampling rate %d" % sampling_rate)
         self.spike_holdoff_samples = int(round(SPIKE_HOLDOFF * sampling_rate))
         self.autottl_holdoff_value = int(0.04 * sampling_rate)
-        
+
     # ONLY FOR DEBUG / SIMULATION
     def autottl(self, data, timestamps, base_timestamp, ch=0, threshold = SPIKE_THRESHOLD, **kwargs):
         '''Generate TTL signals based on threshold in a channel of data.
-        
+
         Playback from file in OE did not support TTL event playback, so it was necessary to generate
         them somehow.
-        
+
         Not used in real situations.
-        
+
         Args:
             ch: channel to run thresholding on for TTL signals
             threshold: threshold level
             base_timestamp: TTL timestamp relative to start of data packet timestamp (in samples)
                 Probably unnecessary, just kept for emulating OE TTL data.
         '''
-        
+
         valid_data = data[ch:ch+1, timestamps > self.autottl_holdoff_until]
         valid_ts = timestamps[timestamps > self.autottl_holdoff_until]
-        
+
         if len(valid_ts) == 0:
             return None
 
         spikepos, spikestamps = self.spikedetect(valid_data, valid_ts, threshold)
- 
+
         ttl_event = None
         if spikepos and spikepos[0]:
             ttlts = spikestamps[0][0]
@@ -533,4 +568,4 @@ class DataProc(object):
 
         return ttl_event
 
-logger = logging.getLogger("logger") 
+logger = logging.getLogger("logger")

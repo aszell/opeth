@@ -23,7 +23,7 @@ COMMPROCESS_MAX_POLLTIME = 0.1    # max amount of time that can be spent in the 
 
 class CommProcess(object):
     '''ZMQ communication process - stores data, called periodically from GUI process.
-    
+
     Attributes:
         context (zmq.Context): Networking context for ZeroMQ
         dataport (int): TCP port of Open Ephys plugin for data reception
@@ -31,15 +31,15 @@ class CommProcess(object):
         data_socket (zmq.SUB socket): ZMQ subscriber for incoming data
         event_socket (zmq.SUB socket): ZMQ REQ interface
     '''
-    
+
     def __init__(self, dataport=5556, eventport=5557):
         '''
         Attributes:
             collector (:class:`collector.Collector`): Data storage
-            
+
         Args:
             dataport (int): Open Ephys ZMQ plugin's data port, default: 5556
-            eventport (int): Open Ephys ZMQ plugin's event port, default: 5557            
+            eventport (int): Open Ephys ZMQ plugin's event port, default: 5557
         '''
         self.context = zmq.Context()
         self.dataport = dataport
@@ -51,7 +51,7 @@ class CommProcess(object):
         self.socket_waits_reply = False
         self.event_no = 0
         self.app_name = 'Plot Process'
-        self.uuid = str(uuid.uuid4())   #: unique ID used in heartbeat 
+        self.uuid = str(uuid.uuid4())   #: unique ID used in heartbeat
         self.last_heartbeat_time = 0
         self.last_reply_time = time.time()
         self.isTesting = False
@@ -59,7 +59,7 @@ class CommProcess(object):
         self.msgstat_start = None
         self.msgstat_size = []
         self.collector = Collector()
-        
+
         self.samprate = -1
         self.channels = 0
 
@@ -71,9 +71,10 @@ class CommProcess(object):
 
     def add_event(self, event):
         '''Add/update event or timestamp.'''
+        print("Event received: ", event)
         if event.type == 'TIMESTAMP':
             self.collector.update_ts(event.timestamp)
-        elif event.type == 'TTL' and event.event_id == 1: # rising edge TTL
+        elif event.type == 'TTL': # rising edge TTL
             self.collector.add_ttl(event)
 
     def adjust_samprate(self, samprate):
@@ -82,13 +83,13 @@ class CommProcess(object):
             logger.info("Sampling rate changed: %d -> %d" % (self.samprate, samprate))
             self.samprate = samprate
             self.collector.update_samprate(samprate)
-            
+
     def adjust_channels(self, channels):
         if channels != self.channels:
             logger.info("Channel count changed: %d -> %d" % (self.channels, channels))
             self.channels = channels
             self.collector.update_channels(channels)
-            
+
     # noinspection PyMethodMayBeStatic
     def add_spike(self, spike):
         '''Add spikes. Currently not used.'''
@@ -107,7 +108,7 @@ class CommProcess(object):
 
     def send_event(self, event_list=None, event_type=3, sample_num=0, event_id=2, event_channel=1):
         '''
-        Note: 
+        Note:
             Not used just for testing.'''
         if not self.socket_waits_reply:
             self.event_no += 1
@@ -132,7 +133,7 @@ class CommProcess(object):
 
     def connect(self):
         '''Initial connection to ZMQ plugin.
-        
+
         Starts polling the interfaces.'''
         logger.info("init socket")
         self.data_socket = self.context.socket(zmq.SUB)
@@ -147,9 +148,9 @@ class CommProcess(object):
 
     def timer_callback(self):
         '''Called periodically from GUI to process network messages.
-        
+
         All the most important network processing happens here.
-        
+
         * Sends heartbeat messages every two seconds.
         * Collects data.
         * Processes incoming events.
@@ -232,7 +233,7 @@ class CommProcess(object):
                         n_channels = c['n_channels']
                         self.adjust_channels(n_channels)
                         n_real_samples = c['n_real_samples']
-                        
+
                         if 'sample_rate' in c:
                             self.adjust_samprate(c['sample_rate'])
                         else:
@@ -252,7 +253,7 @@ class CommProcess(object):
                             if n_real_samples > 0:
                                 n_arr = n_arr[:, 0:n_real_samples]
                                 self.add_data(n_arr)
-                                
+
                         except IndexError as e:
                             logger.error(e)
                             logger.error(header)
