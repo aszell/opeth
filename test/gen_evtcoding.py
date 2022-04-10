@@ -95,7 +95,7 @@ class ZmqGenerator(object):
          'content': {'type': 3, 'sample_num': 42, 'event_id': event_id, 'event_channel': event_channel, 'timestamp': ts},
          'data_size': 0 # 13?
         }
-        print(d)
+        #print(d)
         j_msg = json.dumps(d)
         msg = [b'\x00\x00\x00\x00', j_msg.encode('utf-8'), b'']
 
@@ -125,7 +125,7 @@ class ZmqGenerator(object):
         bitmask = 1<<next_bit
         before = self.current_eventbits
         self.current_eventbits = (self.current_eventbits & ~bitmask) | (target &bitmask)
-        print(f"bef: {before:07b} tgt: {target:07b} bit: {next_bit} res: {self.current_eventbits:07b}")
+        #print(f"bef: {before:07b} tgt: {target:07b} bit: {next_bit} res: {self.current_eventbits:07b}")
         return next_bit, 1 if (self.current_eventbits & bitmask) else 0
 
     def generate(self, channels=32, **kwargs):
@@ -178,7 +178,7 @@ class ZmqGenerator(object):
                         evtmsg = self.generate_event(msgcount, ts + 600, evt_id, evt_channel)
                         self.data_socket.send_multipart(evtmsg)
                         msgcount += 1
-                        print(f"ch: {evt_channel} id: {evt_id}\n")
+                        #print(f"ch: {evt_channel} id: {evt_id}\n")
                     else:
                         self.eventtgt = self.get_next_evt()
                         print(f"Targeting new event {self.eventtgt:3} 0b{self.eventtgt:07b}")

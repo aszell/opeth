@@ -71,7 +71,7 @@ class CommProcess(object):
 
     def add_event(self, event):
         '''Add/update event or timestamp.'''
-        print("Event received: ", event)
+        #print("Event received: ", event)
         if event.type == 'TIMESTAMP':
             self.collector.update_ts(event.timestamp)
         elif event.type == 'TTL': # rising edge TTL

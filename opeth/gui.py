@@ -35,7 +35,7 @@ from opeth import logsetup
 from opeth.spike_gui import SpikeEvalGui
 from opeth import pgext
 from opeth.comm import CommProcess
-from opeth.colldata import DataProc, EVENT_ROI, SAMPLES_PER_SEC, SPIKE_HOLDOFF
+from opeth.colldata import DataProc, EVENT_ROI, SAMPLES_PER_SEC, SPIKE_HOLDOFF, HAS_EVENTCODES
 from opeth.debug import TimeMeasClass     # used for DEBUG_TIMING
 from opeth.version import __version__
 
@@ -57,6 +57,10 @@ DEBUG = False               #: Enable or disable debug mode
 DEBUG_TIMING = False        #: Enable timing prints
 DEBUG_FPS = False           #: Enable frame per sec debug prints
 DEBUG_FPSREPORT_PERIOD = 5  #: FPS debug print update frequency
+
+if HAS_EVENTCODES:
+    EVT_MAP_TO_PLOT = { 120:0, 121:1, 122:2, 123:3, 124:4, 125:5, 126:6, 127:7, 128:8}
+    EVT_SELECTED_CHANNELS = [0,1,2,3]
 
 # CONSTANTS
 
@@ -96,20 +100,20 @@ class Theme(Enum):
 
 class GuiClass(object):
     '''Main GUI handling class.
-    
+
     Creates windows:
-    
+
     * Main histogram window with parameters.
-    
+
     * Raw data window with real time plotted continuous scrolling waveform for overview.
-    
+
     * Debug window if :data:`DEBUG` is True.
-    
+
     * Spike analysis windows using :class:`spike_gui.SpikeEvalGui` when corresponding button is pressed.
-    
+
     At startup as long as no data is present the histogram windows are not populated as the input data
     channel count is not known.
-    
+
     The main loop performing the most important periodic operations is in :meth:`update`
     method, calling e.g. :meth:`comm.CommProcess.timer_callback` to collect data and based on that
     update plot data.
@@ -118,17 +122,17 @@ class GuiClass(object):
     MAX_PLOT_PER_SEC = 4    #: Perfomance limit through :attr:`earliest_hist_plot`
 
     def __init__(self):
-        '''        
+        '''
         Attributes:
             rawdata_curves (list):  Top part waveforms of raw analog window
             ttlraw_curves (list):   Bottom part waveforms of raw analog window
             cp (comm.CommProcess):  Interface and data collector to OE
             dataproc (colldata.DataProc):  Data processor instance working on :attr:`cp`'s :class:`colldata.Collector` data
             mainwin (QtGui.QMainWindow): Main window with histogram and parameter setup window
-            rawdatawin (pyqtgraph.GraphicsWindow): Real time raw analog data display with a continuously scrolling part and a 
+            rawdatawin (pyqtgraph.GraphicsWindow): Real time raw analog data display with a continuously scrolling part and a
                 TTL-aligned snapshot.
             debugwin (QtGui.QWidget): Opened only if :data:`DEBUG` is True, displays some internal variables for debugging
-            spike_bin_ms (2D np.ndarray): Histogram bins, one row per channel, each row contains 
+            spike_bin_ms (2D np.ndarray): Histogram bins, one row per channel, each row contains
                 :attr:`ttl_range_ms` + 1 number of bins for collecting spike offsets relative to event.
             ttl_range_ms (int):     TTL range specified by start and end value in :attr:`event_roi`
                 (warning: if :data:`HISTOGRAM_BINSIZE` modified, it is not ms any more!)
@@ -136,9 +140,9 @@ class GuiClass(object):
                 TTL pulse for spike search region and plotting e.g. [-0.02, 0.05] for default 20 ms before, 50 ms after)
             configfname (str):       Name of config file for parameter setup storage. :data:`PARAMFNAME` points to the file
                 from where its initial value is read during program startup.
-            threshold_levels (np.ndarray of floats):  One row per tetrode, threshold level in uV. 
+            threshold_levels (np.ndarray of floats):  One row per tetrode, threshold level in uV.
                 Same sign both for negative and positive spikes as in GUI, will be adjusted afterwards for spike detection.
-            histplots (list of lists of plots): Histogram plot collection for data updates - each element is a 
+            histplots (list of lists of plots): Histogram plot collection for data updates - each element is a
                 collection of per-channel histograms for a given tetrode.
         '''
         self.rawdata_curves = []
@@ -191,6 +195,9 @@ class GuiClass(object):
         if RERECORD:
             self.datafile = open('data.txt', 'wt')
             self.ttlfile = open('trigger.txt', 'wt')
+
+        if HAS_EVENTCODES:
+            self.most_recent_eventcode = None
 
         # GUI colors
         # by default start off with dark colors
@@ -254,12 +261,12 @@ class GuiClass(object):
             w.set_sampling_rate(sampling_rate)
         self.cp.collector.set_sampling_rate(sampling_rate)
         self.dataproc.set_sampling_rate(sampling_rate)
-        
+
         if clear_plot:
             self.clear_plot()
-        
+
         self.par_sampling_rate.setValue(sampling_rate)
-        
+
         logger.info("New sampling rate: %d" % self.sampling_rate)
 
     def update_plotstyle(self):
@@ -335,8 +342,8 @@ class GuiClass(object):
         msg += '<table align="center">'
         msg += '<tr><th colspan=2 align="left" style="padding-left:1.5em">DEFAULTS in code (see gui.py and colldata.py):</th></tr>'
         msg += '<tr><th align="left">Spike censoring time (SPIKE_HOLDOFF):</th><td style="padding-left:1em">%.2f ms</td></tr>' % (SPIKE_HOLDOFF * 1000)
-        msg += '<tr><th align="left">Histogram bin size (HISTOGRAM_BINSIZE):</th><td style="padding-left:1em">%.2f ms</td></tr>' % (HISTOGRAM_BINSIZE * 1000)        
-        msg += '<tr><th align="left">Inverted spike detection (NEGATIVE_THRESHOLD):</th><td style="padding-left:1em">%s</td></tr>' % ('yes' if NEGATIVE_THRESHOLD else 'no')        
+        msg += '<tr><th align="left">Histogram bin size (HISTOGRAM_BINSIZE):</th><td style="padding-left:1em">%.2f ms</td></tr>' % (HISTOGRAM_BINSIZE * 1000)
+        msg += '<tr><th align="left">Inverted spike detection (NEGATIVE_THRESHOLD):</th><td style="padding-left:1em">%s</td></tr>' % ('yes' if NEGATIVE_THRESHOLD else 'no')
         msg += '</table>'
         label = QtGui.QLabel(msg)
         label.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
@@ -463,7 +470,7 @@ class GuiClass(object):
             channelplots = []
             for i in range(self.channels_per_plot):
                 ch_id = idx * self.channels_per_plot + i
-                
+
                 color = self.display_linecolors[i] if ch_id not in self.disabled_channels else (255,255,255,0) # transparent
 
                 pen = pg.mkPen(color=color, width=LINE_WIDTH)
@@ -501,10 +508,10 @@ class GuiClass(object):
         self.par_sampling_rate = Parameter.create(name='Sampling rate', type='int', value=self.sampling_rate,
                                                  limits=(1000, 200000), siPrefix=True, suffix='Hz')
         self.param.addChild(self.par_sampling_rate)
-        
+
         self.par_ttl_src = Parameter.create(name='Event trigger channel', type='int', limits=(1, MAX_TRIGGER_CHANNEL))
         self.param.addChild(self.par_ttl_src)
-        
+
         self.par_ch_per_plot = Parameter.create(name='Channels per plot', type='int',  limits=(1, MAX_CHANNELS_PER_PLOT),
                                                 value=CHANNELS_PER_HISTPLOT)
         self.param.addChild(self.par_ch_per_plot)
@@ -515,7 +522,7 @@ class GuiClass(object):
         self.par_ttlroi_before = Parameter.create(name='ROI before event', type='float', value=self.event_roi[0], step=1e-3, siPrefix=True,
                                                   limits=(-500, 500), suffix='s')
         self.param.addChild(self.par_ttlroi_before)
-        
+
         self.par_ttlroi_after = Parameter.create(name='ROI after event', type='float', value=self.event_roi[1], step=1e-3, siPrefix=True,
                                                  limits=(-500, 500), suffix='s')
         self.param.addChild(self.par_ttlroi_after)
@@ -676,16 +683,16 @@ class GuiClass(object):
     def more_than_two_continuous(self, intlist):
         '''In order to reduce a string of '1, 2, 3, 4' to '1-4' return the longest
         series of numbers incrementing by one at the beginning of an intlist.
-        
+
         Helper function for :meth:`update_disabled_channels`, the opposite of
         :meth:`convert_strlist_to_ints` (partially).
-        
+
         Parameters:
             intlist (list): a list of integers
-            
+
         Returns:
-            either the first element of `intlist` or a list of elements if 
-            more than two consecutive numbers were incrementing by one. 
+            either the first element of `intlist` or a list of elements if
+            more than two consecutive numbers were incrementing by one.
         '''
         if len(intlist) < 3:
             return [intlist[0]]
@@ -703,10 +710,10 @@ class GuiClass(object):
 
     def convert_strlist_to_ints(self, str_in):
         '''Convert a text entry of disabled channels to an integer list.
-        
-        Parameters: 
+
+        Parameters:
             str_in (str): input string in the format ``1-4, 17, 30-33``.
-        
+
         Returns:
             a list of integers like ``[1,2,3,4,17,30,31,32,33]``.
         '''
@@ -742,10 +749,10 @@ class GuiClass(object):
             remainder = remainder[len(res):]
 
     def update_disabled_channels(self):
-        '''Called when list of disabled channels is entered; it parses 
+        '''Called when list of disabled channels is entered; it parses
         the input string to understand and abbreviate series of numbers.
-        
-        Uses :meth:`convert_strlist_to_ints` and reproduces the string 
+
+        Uses :meth:`convert_strlist_to_ints` and reproduces the string
         with :meth:`more_than_two_continuous` in order to verify syntax
         and to combine input like ``1, 2, 3`` to ``1-3``.
         '''
@@ -924,7 +931,7 @@ class GuiClass(object):
                 self.par_histcolor.setValue(histcolor)
             else:   # default if unknown type encountered
                 self.par_histcolor.setValue(PLOT_AGGREGATE)
-                
+
         if cfg.has_option("plot", "channels_per_plot"):
             channels_per_plot = cfg.getint("plot", "channels_per_plot")
             # limit to values between 1 and MAX_CHANNELS_PER_PLOT
@@ -1001,23 +1008,23 @@ class GuiClass(object):
         '''Manually clear plots on button press.'''
         if not self.initiated:
             return
-        
+
         self.clear_plot()
 
     def onChangeTheme(self):
         ''' Switch histogram displays between black and white background '''
         if not self.initiated:
             return
-            
+
         if self.display_theme == Theme.dark:
             self.display_theme = Theme.publication
-            
+
             pg.setConfigOption('background', 'w')
             pg.setConfigOption('foreground', 'k')
             self.display_linecolors = LINECOLORS_WHITEBG
         else:
             self.display_theme = Theme.dark
-            
+
             pg.setConfigOption('background', 'k')
             pg.setConfigOption('foreground', 'w')
             self.display_linecolors = LINECOLORS
@@ -1027,14 +1034,14 @@ class GuiClass(object):
 
     def update_histograms(self):
         '''Update displayed histogram plots.
-        
+
         Types of histogram plots available:
-        
+
         * the normal histogram with e.g. 4 channels per tetrode combined
             into a single histogram, channels indistinguishable
-        
+
         * same histogram but each channel with its own colour, a histogram
-            bar consisting of Ch1+Ch2+Ch3+Ch4 separated by colour 
+            bar consisting of Ch1+Ch2+Ch3+Ch4 separated by colour
             (same outline as in previous case just 4 colours instead of 1)
 
             Trick for display: 4 plots displayed,
@@ -1095,41 +1102,41 @@ class GuiClass(object):
                 spikewin.plot(data_ts, data, spike_ts, spike_pos, self.threshold_levels)
 
     def update(self, **kwargs):
-        ''' 
+        '''
         The main loop, processes input data and updates plots. Called periodically from a Qt timer.
 
         On very first round with actual data present it calls :meth:`update_channelcnt` to
         create the necessary amount of histogram plots.
-        
-        Periodically calls 
-        
+
+        Periodically calls
+
         * :meth:`comm.CommProcess.timer_callback` to fetch new data
-        
+
         * :meth:`colldata.Collector.keep_last` to drop old data
-        
+
         * :meth:`colldata.Collector.process_ttl` to fetch region of interest around TTL
-        
+
         * :meth:`colldata.DataProc.compress` to reduce complexity of the real time plot
-        
+
         * :meth:`colldata.DataProc.spikedetect` to find spikes
-        
+
         * update spike analysis windows :meth:`update_spikewins`
-        
+
         and updates real time plot data via :attr:`rawdata_curves` and :attr:`ttlraw_curves`
-        
+
         Attributes:
-            spike_bin_ms (2D numpy array): Histogram bins containing one row per channel of spike event 
+            spike_bin_ms (2D numpy array): Histogram bins containing one row per channel of spike event
                 counter bins (accumulating);
                 first item per row contains the bin corresponding to start of trigger area ( :attr:`event_roi` [0] )
                 and last one to the end ( :attr:`event_roi` [1] )
             data_at_ttl (2D numpy array): Each row contains the same number of samples from different channels
             data_ts (1D numpy array): Timestamps of :attr:`data_at_ttl` samples around TTL
                 (in seconds, used for binning)
-            data_ts_0 (1D numpy array): Same array as data_ts, start offset removed (timestamp of first sample is 0), 
+            data_ts_0 (1D numpy array): Same array as data_ts, start offset removed (timestamp of first sample is 0),
                 used for histogram generation (binning)
-            data_ts_roi (1D numpy array): TTL timestamps with actual TTL event aligned to 0 (one ts for each 
+            data_ts_roi (1D numpy array): TTL timestamps with actual TTL event aligned to 0 (one ts for each
                 sample - samples start earlier than TTL), used for plotting the time scale
-            spike_pos (list of lists): each internal list contains sample index of spike events for a given channel 
+            spike_pos (list of lists): each internal list contains sample index of spike events for a given channel
                 (events over threshold, disabled channels not included)
             spike_ts (list of lists): Same layout as :attr:`spike_pos`, contains the actual timestamps
                 of spikes for plotting x axis
@@ -1153,7 +1160,7 @@ class GuiClass(object):
         if DEBUG_FPS and (default_timer() - self.last_fps_report > DEBUG_FPSREPORT_PERIOD):
             fps = (self.framecnt - self.lastframecnt) / (default_timer() - self.last_fps_report)
             self.fpslist.append(fps)
-            
+
             logger.info("\r%.1f updates / sec [%.1f - %.1f], compr: %.3f @ %.1f" % (
                            fps, min(self.fpslist), max(self.fpslist),
                            self.elapsed, default_timer() - self.starttime))
@@ -1165,7 +1172,7 @@ class GuiClass(object):
             self.elapsed = 0
 
         ############################
-        # actual ZMQ data processing 
+        # actual ZMQ data processing
         self.timeas.tic("full")
         self.timeas.tic("01 timer_cb")
         self.cp.timer_callback()
@@ -1184,7 +1191,7 @@ class GuiClass(object):
 
         # check for possible sampling rate changes
         new_samprate = self.cp.collector.get_sampling_rate()
-        
+
         if self.initiated and (new_samprate != self.sampling_rate):
             logger.info("Detected sampling rate change: %d -> %d" % (self.sampling_rate, new_samprate))
             self.update_samplingrate(new_samprate, clear_plot=True)
@@ -1247,10 +1254,20 @@ class GuiClass(object):
             # TTL processing loop: process as many TTLs as present then break.
 
             self.timeas.tic("05-process_ttl")
-            data_at_ttl, data_ts = self.cp.collector.process_ttl(ttl_ch=self.par_ttl_src.value() - 1,
+            res = self.cp.collector.process_ttl(ttl_ch=self.par_ttl_src.value() - 1,
                                                                  start_offset=self.event_roi[0],
                                                                  end_offset=self.event_roi[1],
                                                                  trigger_holdoff=TRIGGER_HOLDOFF)
+
+            if len(res) == 3:
+                # event decoder mode
+                data_at_ttl, data_ts, evtid = res
+                self.most_recent_eventcode = evtid
+                logger.info(f"Got event: {evtid}")
+            else:
+                # normal modes
+                data_at_ttl, data_ts = res
+
             self.timeas.toc("05-process_ttl")
 
             #print "TTL SRC:", self.par_ttl_src.value()
@@ -1300,12 +1317,37 @@ class GuiClass(object):
             self.timeas.toc("06-spikedetect")
             self.timeas.tic("06-spikehist")
             all_spike_cnt = 0
-            for chnum, poslist in enumerate(spike_pos):
-                for pos in poslist:
-                    ts_binpos = round(data_ts_0[pos] / HISTOGRAM_BINSIZE)
-                    ti_binpos = int(ts_binpos)
-                    self.spike_bin_ms[chnum, ti_binpos] += 1
-                    all_spike_cnt += 1
+
+            if HAS_EVENTCODES:
+                # target output histograms based on current decoded event, not based on spike channel
+                for chnum, poslist in enumerate(spike_pos):
+                    if chnum not in EVT_SELECTED_CHANNELS:
+                        continue
+
+                    #print(chnum, poslist)
+
+                    if self.most_recent_eventcode is not None:
+                        target_plot = EVT_MAP_TO_PLOT.get(self.most_recent_eventcode, 0)
+                    else:
+                        # all the unhandled ones are collected to plot 0
+                        target_plot = 0
+
+                    for pos in poslist:
+                        ts_binpos = round(data_ts_0[pos] / HISTOGRAM_BINSIZE)
+                        ti_binpos = int(ts_binpos)
+                        # target plot is based on event code as in EVT_MAP_TO_PLOT
+                        # Due to these coded events, same ch1-4 triggers are displayed on different plots
+                        plot_offset = self.channels_per_plot * target_plot
+                        self.spike_bin_ms[chnum + plot_offset, ti_binpos] += 1
+                        all_spike_cnt += 1
+            else:
+                # normal operation, when not eventcodes are enabled
+                for chnum, poslist in enumerate(spike_pos):
+                    for pos in poslist:
+                        ts_binpos = round(data_ts_0[pos] / HISTOGRAM_BINSIZE)
+                        ti_binpos = int(ts_binpos)
+                        self.spike_bin_ms[chnum, ti_binpos] += 1
+                        all_spike_cnt += 1
 
             self.timeas.toc("06-spikehist")
 
@@ -1318,7 +1360,7 @@ class GuiClass(object):
 
         self.timeas.tic("07-plot")
 
-        # If no new data was present then there is no need to update 
+        # If no new data was present then there is no need to update
         if was_new_data or self.force_update:
             self.force_update = False
             if self.earliest_rawttl_plot < default_timer():
@@ -1352,7 +1394,7 @@ class GuiClass(object):
                 self.timing_start = default_timer()
 
     def onClose(self, event):
-        '''Handler for closeEvent of main window (histogram window), should close all other windows 
+        '''Handler for closeEvent of main window (histogram window), should close all other windows
         before closing the main window.'''
 
         self.closing = True
@@ -1381,7 +1423,7 @@ def main():
     ui = GuiClass()
 
     # CTRL+C quits Qt app
-    signal.signal(signal.SIGINT, sigint_handler) 
+    signal.signal(signal.SIGINT, sigint_handler)
 
     timer = QtCore.QTimer()
     timer.timeout.connect(ui.update)

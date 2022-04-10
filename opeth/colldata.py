@@ -37,6 +37,7 @@ SPIKE_THRESHOLD = 0.5
 SPIKE_HOLDOFF = 0.00075         #: Dead time / censoring period (seconds)
 
 DBG_TEXT_DUMP = False
+DBG_EVT_DETAILS = False
 
 # special extension to collect event types encoded in digital bits
 HAS_EVENTCODES = True
@@ -80,6 +81,7 @@ class Collector(object):
         if HAS_EVENTCODES:
             self.eventmask = 0
             self.last_event_processed = None
+            self.last_strobe_eventid = 0
 
     def update_samprate(self, samprate):
         '''Called when first data packet arrives, and any time when sampling rate changes'''
@@ -249,6 +251,8 @@ class Collector(object):
             flog.write("TTL: %s\n" % str(ttl))
 
     # special extension to handle binary coded 7 bit events
+    # Returns an integer with current decoded events on strobe,
+    # and None otherwise
     def process_eventcodes(self, event):
         bitid = event.event_channel
         bitval = event.event_id
@@ -258,14 +262,22 @@ class Collector(object):
         # update specific bit
         if bitid == EVTCODE_STOBECHANNEL:
             if bitval == 1:
-                print(f"== strobe: {self.eventmask} ==\n")
+                if DBG_EVT_DETAILS:
+                    logger.info(f"== strobe: {self.eventmask} ==\n")
+                # this is what we were waiting for... Strobe detected.
+                # any other case is just in progress and updates the event mask
+                return self.eventmask
         else:
             if bitval:
                 self.eventmask |= 1 << bitid
             else:
                 self.eventmask &= ~(1 << bitid)
 
-            print(f"mask: {eventmask_before:3} + bit {bitid} = {bitval} -> {self.eventmask:3}  [{self.eventmask:07b}]")
+            if DBG_EVT_DETAILS:
+                logger.info(f"mask: {eventmask_before:3} + bit {bitid} = {bitval} -> {self.eventmask:3}  [{self.eventmask:07b}]")
+
+        return None
+
 
     def process_ttl(self, start_offset=EVENT_ROI[0], end_offset=EVENT_ROI[1],
                     ttl_ch=None, trigger_holdoff = 0.001, **kwargs):
@@ -302,10 +314,14 @@ class Collector(object):
 
             # this trigger seems to be a strobe signal, let's process it ->
             if HAS_EVENTCODES:
-                # as ttl is not necessarily immediately processed by the rest,
-                # we must remember it was processed already
+                # as event is not necessarily immediately processed by the trigger detector,
+                # we must remember whether the current event was processed already
                 if self.last_event_processed != ttl:
-                    self.process_eventcodes(ttl)
+                    curr_evt = self.process_eventcodes(ttl)
+                    if curr_evt:
+                        if self.last_strobe_eventid:
+                            logger.error(f"ERROR: last event not processed and lost? {self.last_event_processed}")
+                        self.last_strobe_eventid = curr_evt
                     self.last_event_processed = ttl
 
             if ttl_ch is not None and ttl.event_channel != ttl_ch:
@@ -356,7 +372,13 @@ class Collector(object):
                 within_limits = np.logical_and(over_or_eq_min, below_or_eq_max)
                 data = self.databuffer[:, within_limits]
                 ts = self.tsbuffer[within_limits]
-                return data, ts
+                if HAS_EVENTCODES:
+                    evtid = self.last_strobe_eventid
+                    #print(f"eventful: {evtid}")
+                    self.last_strobe_eventid = None
+                    return data, ts, evtid
+                else:
+                    return data, ts
             else:
                 return None, None
 
